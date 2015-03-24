@@ -24,11 +24,11 @@ import System.IO.Unsafe
 
 data Options = Options { optSearch :: [String]
                        , optDbFile :: String
-                       , optExFile :: String
+                       , optExFile :: (Bool, String)
                        , optOpenTags :: [String]
                        , optListTags :: Maybe Bool
                        , optDelete :: [String]
-                       , optUpdate :: ([String], [String])
+                       , optUpdate :: ([String],[String])
                        , optInteractive :: Bool
                        , optPrompt :: Bool
                        , optImportFile :: (Bool,String)
@@ -38,7 +38,7 @@ defaultOptions :: Options
 defaultOptions = Options { optSearch = []
                          , optImportFile = (False,"bookmarks.html")
                          , optDbFile = "bookmarks.db"
-                         , optExFile = "bookmarks.out.html"
+                         , optExFile = (False,"bookmarks.out.html")
                          , optOpenTags = []
                          , optListTags = Nothing
                          , optDelete = []
@@ -50,8 +50,8 @@ defaultOptions = Options { optSearch = []
 options :: [OptDescr (Options -> Options)]
 options = [Option "s" ["search"] (ReqArg readSearch "TAGS")"search by TAGS"
           ,Option "f" ["db-file"] (ReqArg readDbFile "FILE") "use FILE as bm db"
-          ,Option "i" ["import"] (OptArg readImport "FILE") "import from html FILE"
-          ,Option "e" ["export"] (ReqArg readExFile "FILE") "export to FILE"
+          ,Option "i" ["import"] (OptArg readImport "FILE") "import from html FILE to db"
+          ,Option "e" ["export"] (OptArg readExFile "FILE") "export as html to FILE"
           ,Option "o" ["open"] (ReqArg readOpenTags "TAGS") "open matching TAGS"
           ,Option "t" ["list-tags"] (OptArg readListTags "OPT") "list all tags"
           ,Option "u" ["update"] (ReqArg readUpdate "TAGS#NTAGS") "replace TAGS with NTAGS"
@@ -60,12 +60,14 @@ options = [Option "s" ["search"] (ReqArg readSearch "TAGS")"search by TAGS"
           ,Option "r" ["repl"] (NoArg readInteractive) "enter repl mode"
           ]
     where
-        readImport arg opts = opts {optImportFile = maybe (False,"") (\s -> (True,s)) arg}
+        readImport arg opts@(Options {optImportFile=(_,dflt)}) =
+            opts {optImportFile = (True,fromMaybe dflt arg)}
         readInteractive opts = opts {optInteractive = True}
         readPrompt opts = opts {optPrompt = True}
         readSearch arg opts = opts {optSearch = splitOn "," arg}
         readDbFile arg opts = opts {optDbFile = arg}
-        readExFile arg opts = opts {optExFile = arg}
+        readExFile arg opts@(Options {optExFile=(_,dflt)}) =
+            opts {optExFile = (True,fromMaybe dflt arg)}
         readOpenTags arg opts = opts {optOpenTags = splitOn "," arg}
         readListTags arg opts = opts {optListTags = Just $ maybe False ((== "t") . map toLower) arg}
         readDelete arg opts = opts {optDelete = splitOn "," arg}
@@ -86,6 +88,7 @@ ignoreSignal sig = bracket (install Ignore) install . const
 
 main :: IO ()
 main = do args <- getArgs
+          print args
           let (actions, _nonOpts, _errs) = getOpt RequireOrder options args
               opts = foldl (flip ($)) defaultOptions actions
               argListTags = optListTags opts
@@ -96,17 +99,18 @@ main = do args <- getArgs
               argPrompt = optPrompt opts
               argInteractive = optInteractive opts
               (argImport, argImportFile) = optImportFile opts
-              argExFile = optExFile opts
+              (argEx, argExFile) = optExFile opts
               (argUpdOldTags, argUpdNewTags) = optUpdate opts
           print opts
-          when argImport $ importBMs argImportFile argExFile >> exitSuccess
+          when argImport $ importBMs argImportFile argDbFile >> exitSuccess
           bms <- liftM read (readFile argDbFile)
+          when argEx $ exportBMs bms argExFile >> exitSuccess
           when argInteractive $ repl opts bms >> exitSuccess
           when (isJust argListTags) $ printFreqs (fromJust argListTags) bms
                                    >> exitSuccess
-          unless (null argSearch) $ let searchResults = lookupBM bms argSearch
+          unless (null argSearch) $ let searchResults = findByTags bms argSearch
                                     in mapM_ printBM searchResults >> exitSuccess
-          unless (null argOpenTags) $ mapM_ (open argPrompt . bmUrl) (lookupBM bms argOpenTags)
+          unless (null argOpenTags) $ mapM_ (open argPrompt . bmUrl) (findByTags bms argOpenTags)
                                    >> exitSuccess
           unless (null argUpdOldTags) $ updateBMs opts bms argUpdOldTags argUpdNewTags
                                      >> exitSuccess
@@ -121,7 +125,7 @@ repl opts bms = ignoreSignal sigINT $ do
           do writeFile ".done" "done!\n"
              print "Shutting Down")
          ,(otherwise,
-          do let bms' = lookupBM bms tags
+          do let bms' = findByTags bms tags
              putStr . showList $ bms'
              putStrLn $ "Num of found items: " ++ show (length bms') ++ "\n"
              repl opts bms)]
@@ -134,14 +138,15 @@ printFreqs shouldConcat bms
 
 (=?<) :: BM -> [String] -> Bool
 (=?<) (BM{bmTags=tags}) searchTags
-    | null (toList tags) = False
-    | otherwise = toList tags `allElemOf` searchTags
+    | null tags' = False
+    | otherwise = tags' `allElemOf` searchTags
     where
+        tags' = toList tags
         allElemOf :: (Eq a) => [a] -> [a] -> Bool
         allElemOf xs = all (`elem` xs)
 
-lookupBM :: [BM] -> [String] -> [BM]
-lookupBM bms tags = filter (=?< tags) bms
+findByTags :: [BM] -> [String] -> [BM]
+findByTags bms tags = filter (=?< tags) bms
 
 updateBMs :: Options -> [BM] -> [String] -> [String] -> IO ()
 updateBMs opts bms oldTags newTags = ignoreSignal keyboardSignal $ do
@@ -161,7 +166,7 @@ removeBMs :: Options -> [String] -> [BM] -> IO ()
 removeBMs opts tags bms = ignoreSignal sigINT $ do
         let outFile = optDbFile opts
             _prompt = optPrompt opts
-            bms' = difference (fromList bms) (fromList $ lookupBM bms tags)
+            bms' = difference (fromList bms) (fromList $ findByTags bms tags)
         length bms `seq` writeFile outFile . showList $ toList bms'
 
 showList :: (Show a) => [a] -> String
@@ -191,22 +196,28 @@ readYN = do putStr "\n[Y/n]?"
                          "" -> True
                          _ -> False
 
+exportBMs :: [BM] -> String -> IO ()
+exportBMs = undefined
+
 -- For importing from an HTML file with `<a href=".." tags="word[,word]+">`
 importBMs :: String -> String -> IO ()
 importBMs inFile outFile = do
         tags <- return . parseTags =<< readFile inFile
+        writeFile outFile "[BM {bmTags = fromList [\"\"], bmUrl = \"\"}"
         let bms :: [Tag String]
             bms = filter (tagOpenLit "A" (const True)) tags
             bms' = (fromAttrib "TAGS" &&& fromAttrib "HREF") `map` bms
-        forM_ (zip [1..] bms') $ \(n,(tag,bm)) -> do
+        forM_ (zip [1..] bms') $ \(n,(tag,b)) -> do
+            let bm = BM {bmTags=fromList $ splitOn "," tag,bmUrl=b}
             print (n :: Int,(tag,bm))
-            tag' <- getTags bm
+            tag' <- getTags . bmUrl $ bm
             if isJust tag'
-                then do let tag'' = tag ++ "," ++ fromJust tag'
-                        appendFile outFile $ show (tag'',bm) ++ "\n"
-                        print tag''
+                then do let bm' = bm {bmTags=fromList $ toList (bmTags bm) ++ splitOn "," (fromJust tag')}
+                        appendFile outFile $ "," ++ show bm ++ "\n"
+                        print bm'
                         putStrLn ""
                 else putStrLn ""
+        appendFile outFile "\n]\n"
 
 getTags :: String -> IO (Maybe String)
 getTags bm = do
