@@ -23,6 +23,7 @@ import Text.Printf
 
 import System.IO.Unsafe
 
+data ImportType = CSV | HTML deriving (Show)
 data Options = Options { optSearch :: [String]
                        , optDbFile :: String
                        , optExFile :: (Bool, String)
@@ -32,14 +33,14 @@ data Options = Options { optSearch :: [String]
                        , optUpdate :: ([String],[String])
                        , optInteractive :: Bool
                        , optPrompt :: Bool
-                       , optImportFile :: (Bool,String)
+                       , optImportFile :: (Maybe ImportType,String)
                        } deriving (Show)
 
 defaultOptions :: Options
 defaultOptions = Options { optSearch = []
-                         , optImportFile = (False,"bookmarks.html")
-                         , optDbFile = "bookmarks.db"
-                         , optExFile = (False,"bookmarks.out.json")
+                         , optImportFile = (Nothing,"")
+                         , optDbFile = "bms.db"
+                         , optExFile = (False,"bms.out.json")
                          , optOpenTags = []
                          , optListTags = Nothing
                          , optDelete = []
@@ -51,7 +52,7 @@ defaultOptions = Options { optSearch = []
 options :: [OptDescr (Options -> Options)]
 options = [Option "s" ["search"] (ReqArg readSearch "TAGS")"search by TAGS"
           ,Option "f" ["db-file"] (ReqArg readDbFile "FILE") "use FILE as bm db"
-          ,Option "i" ["import"] (OptArg readImport "FILE") "import from html FILE to db"
+          ,Option "i" ["import"] (OptArg readImport "FILE") "import from FILE to db"
           ,Option "e" ["export"] (OptArg readExFile "FILE") "export as html to FILE"
           ,Option "o" ["open"] (ReqArg readOpenTags "TAGS") "open matching TAGS"
           ,Option "t" ["list-tags"] (OptArg readListTags "OPT") "list all tags"
@@ -62,7 +63,13 @@ options = [Option "s" ["search"] (ReqArg readSearch "TAGS")"search by TAGS"
           ]
     where
         readImport arg opts@(Options {optImportFile=(_,dflt)}) =
-            opts {optImportFile = (True,fromMaybe dflt arg)}
+            opts {optImportFile = (Just argType,arg')}
+            where
+                arg' = fromMaybe dflt arg
+                argType = case map toLower $ last (splitOn "." arg') of
+                              "csv" -> CSV
+                              "html" -> HTML
+                              x -> error $ "Invalid ImportType: " ++ x
         readInteractive opts = opts {optInteractive = True}
         readPrompt opts = opts {optPrompt = True}
         readSearch arg opts = opts {optSearch = splitOn "," arg}
@@ -103,11 +110,15 @@ main = do args <- getArgs
               (argImport, argImportFile) = optImportFile opts
               (argEx, argExFile) = optExFile opts
               (argUpdOldTags, argUpdNewTags) = optUpdate opts
-          when argImport $ importBMs argImportFile argDbFile >> exitSuccess
           bms <- liftM read (readFile argDbFile)
+          when (isJust argImport) $ (case fromJust argImport of
+                                         HTML -> importBMsFromHtml
+                                         CSV  -> importBMsFromCSV)
+                                    bms argImportFile argDbFile
+                                 >> exitSuccess
           when argEx $ exportBMs bms argExFile >> exitSuccess
           when argInteractive $ repl opts bms >> exitSuccess
-          when (isJust argListTags) $ printFreqs (fromJust argListTags) bms
+          when (isJust argListTags) $ printStats (fromJust argListTags) bms
                                    >> exitSuccess
           unless (null argSearch) $ let searchResults = findByTags bms argSearch
                                     in mapM_ printBM searchResults >> exitSuccess
@@ -132,11 +143,18 @@ repl opts bms = ignoreSignal sigINT $ do
              putStrLn $ "Num of found items: " ++ show (length bms') ++ "\n"
              repl opts bms)]
 
-printFreqs :: Bool -> [BM] -> IO ()
-printFreqs shouldConcat bms
-    | shouldConcat = putStrLn . showList $ frequencies freqs
-    | otherwise    = putStrLn . showList $ frequencies . concat $ freqs
-    where freqs = map (toList . bmTags) bms
+printStats :: Bool -> [BM] -> IO ()
+printStats shouldConcat bms
+    | shouldConcat = do let freqs = frequencies tags
+                        putStrLn . showList $ freqs
+                        putStrLn $ "Number of Tag Combinations: " ++ show (length freqs)
+                        putStrLn $ "Total: " ++ numBMs
+    | otherwise    = do let freqs = frequencies . concat $ tags
+                        putStrLn . showList $ freqs
+                        putStrLn $ "Number of Tags: " ++ show (length freqs)
+                        putStrLn $ "Total: " ++ numBMs
+    where tags = map (toList . bmTags) bms
+          numBMs = show (length bms)
 
 (=?<) :: BM -> [String] -> Bool
 (=?<) (BM{bmTags=tags}) searchTags
@@ -153,12 +171,15 @@ findByTags bms tags = filter (=?< tags) bms
 updateBMs :: Options -> [BM] -> [String] -> [String] -> IO ()
 updateBMs opts bms oldTags newTags = ignoreSignal keyboardSignal $ do
         let outFile = optDbFile opts
-            prompt = optPrompt opts
-        newBms <- forM bms (\bm -> if (bm =?< oldTags) && (not prompt || unsafePerformIO (printBM bm >> readYN))
-                                       then return $ replace bm oldTags newTags
-                                       else return bm)
+            shouldPrompt = optPrompt opts
+        newBms <- forM bms (promptThenReplace shouldPrompt)
         length bms `seq` writeFile outFile (showList newBms)
     where
+        promptThenReplace :: Bool -> BM -> IO BM
+        promptThenReplace shouldPrompt bm =
+            if (bm =?< oldTags) && (not shouldPrompt || unsafePerformIO (printBM bm >> readYN))
+                then return $ replace bm oldTags newTags
+                else return bm
         replace :: BM -> [String] -> [String] -> BM
         replace bm@(BM{bmTags=tags}) old new =
             let tags' = filter (not . (`elem` old)) (toList tags)
@@ -181,8 +202,8 @@ frequencies :: (Ord a) => [a] -> [(a, Int)]
 frequencies = map (head &&& length) . group . sort
 
 open :: Bool -> URL -> IO (Maybe String)
-open prompt url = ignoreSignal sigINT $
-    if not prompt || unsafePerformIO (putStr url >> readYN)
+open shouldPrompt url = ignoreSignal sigINT $
+    if not shouldPrompt || unsafePerformIO (putStr url >> readYN)
         then do
             -- open has trouble when opening too many processes
             threadDelay (250*1000)
@@ -194,6 +215,7 @@ readYN :: IO Bool
 readYN = do putStr "\n[Y/n]?"
             line <- getLine
             return $ case map toLower line of
+                         "yes" -> True
                          "y" -> True
                          "" -> True
                          _ -> False
@@ -215,10 +237,24 @@ exportBMs bms outFile = do
             printf "{\"title\":\"%s\",\"charset\":\"UTF-8\",\"tags\":\"%s\",\"type\":\"text/x-moz-place\",\"uri\":\"%s\"}"
             url (intercalate "," $ toList tags) url
 
+-- For importing from a csv file with syntax: `url,title,..,tag`
+importBMsFromCSV :: [BM] -> String -> String -> IO ()
+importBMsFromCSV bms csvFile outFile = do
+        rsavedCSV <- readFile csvFile
+        let savedLines = drop 1 . splitOn "\n" $ rsavedCSV
+        rsaved <- return . mapMaybe (csvToBM . splitOn ",") $ savedLines
+        printStats True rsaved
+        length bms `seq` writeFile outFile (showList (bms ++ rsaved))
+    where
+        csvToBM :: [String] -> Maybe BM
+        csvToBM [url,title,_,tag] = Just BM {bmUrl=url,bmTitle=title,bmTags=fromList [tag]}
+        csvToBM _ = Nothing
+
 -- For importing from an HTML file with `<a href=".." tags="word[,word]+">`
-importBMs :: String -> String -> IO ()
-importBMs inFile outFile = do
-        tags <- return . parseTags =<< readFile inFile
+-- TODO: Don't overwrite dbFile
+importBMsFromHtml :: [BM] -> String -> String -> IO ()
+importBMsFromHtml _bms dbFile outFile = do
+        tags <- return . parseTags =<< readFile dbFile
         writeFile outFile "[BM {bmTags = fromList [\"\"], bmUrl = \"\"}"
         let bms :: [Tag String]
             bms = filter (tagOpenLit "A" (const True)) tags
@@ -237,12 +273,10 @@ importBMs inFile outFile = do
 getTags :: String -> IO (Maybe String)
 getTags bm = do
         tag <- getLine
-        let tag' :: Maybe String
-            tag' = case tag of
-                       "d" -> Nothing
-                       "s" -> Just ""
-                       "o" -> do void $ unsafePerformIO (open True bm)
-                                 unsafePerformIO (getTags bm)
-                       "" -> unsafePerformIO (getTags bm)
-                       _ -> Just tag
-        return tag'
+        return $ case tag of
+                     "d" -> Nothing
+                     "s" -> Just ""
+                     "o" -> do void $ unsafePerformIO (open True bm)
+                               unsafePerformIO (getTags bm)
+                     "" -> unsafePerformIO (getTags bm)
+                     _ -> Just tag
