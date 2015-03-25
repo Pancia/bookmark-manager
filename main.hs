@@ -19,6 +19,7 @@ import System.Posix.Signals
 import System.Process
 import Text.HTML.TagSoup
 import Text.HTML.TagSoup.Match
+import Text.Printf
 
 import System.IO.Unsafe
 
@@ -38,7 +39,7 @@ defaultOptions :: Options
 defaultOptions = Options { optSearch = []
                          , optImportFile = (False,"bookmarks.html")
                          , optDbFile = "bookmarks.db"
-                         , optExFile = (False,"bookmarks.out.html")
+                         , optExFile = (False,"bookmarks.out.json")
                          , optOpenTags = []
                          , optListTags = Nothing
                          , optDelete = []
@@ -78,8 +79,10 @@ options = [Option "s" ["search"] (ReqArg readSearch "TAGS")"search by TAGS"
 
 type TAG = String
 type URL = String
+type TITLE = String
 data BM = BM { bmTags :: Set TAG
              , bmUrl :: URL
+             , bmTitle :: TITLE
              } deriving (Show, Read, Eq, Ord)
 
 ignoreSignal :: Signal -> IO a -> IO a
@@ -88,7 +91,6 @@ ignoreSignal sig = bracket (install Ignore) install . const
 
 main :: IO ()
 main = do args <- getArgs
-          print args
           let (actions, _nonOpts, _errs) = getOpt RequireOrder options args
               opts = foldl (flip ($)) defaultOptions actions
               argListTags = optListTags opts
@@ -101,7 +103,6 @@ main = do args <- getArgs
               (argImport, argImportFile) = optImportFile opts
               (argEx, argExFile) = optExFile opts
               (argUpdOldTags, argUpdNewTags) = optUpdate opts
-          print opts
           when argImport $ importBMs argImportFile argDbFile >> exitSuccess
           bms <- liftM read (readFile argDbFile)
           when argEx $ exportBMs bms argExFile >> exitSuccess
@@ -110,7 +111,8 @@ main = do args <- getArgs
                                    >> exitSuccess
           unless (null argSearch) $ let searchResults = findByTags bms argSearch
                                     in mapM_ printBM searchResults >> exitSuccess
-          unless (null argOpenTags) $ mapM_ (open argPrompt . bmUrl) (findByTags bms argOpenTags)
+          unless (null argOpenTags) $ mapM_ (open argPrompt . bmUrl)
+                                            (findByTags bms argOpenTags)
                                    >> exitSuccess
           unless (null argUpdOldTags) $ updateBMs opts bms argUpdOldTags argUpdNewTags
                                      >> exitSuccess
@@ -197,7 +199,21 @@ readYN = do putStr "\n[Y/n]?"
                          _ -> False
 
 exportBMs :: [BM] -> String -> IO ()
-exportBMs = undefined
+exportBMs bms outFile = do
+        before <- readFile "before.json"
+        after <- readFile "after.json"
+        writeFile outFile =<< do
+            let bef = before ++ "\n[\n"
+                aft =  "\n]\n" ++ after
+                bms' = map bmToJson bms
+            putStrLn "Done!"
+            return $ bef ++ intercalate "\n," bms' ++ aft
+
+    where
+        bmToJson :: BM -> String
+        bmToJson (BM{bmUrl=url,bmTags=tags,bmTitle=_title}) =
+            printf "{\"title\":\"%s\",\"charset\":\"UTF-8\",\"tags\":\"%s\",\"type\":\"text/x-moz-place\",\"uri\":\"%s\"}"
+            url (intercalate "," $ toList tags) url
 
 -- For importing from an HTML file with `<a href=".." tags="word[,word]+">`
 importBMs :: String -> String -> IO ()
@@ -208,15 +224,14 @@ importBMs inFile outFile = do
             bms = filter (tagOpenLit "A" (const True)) tags
             bms' = (fromAttrib "TAGS" &&& fromAttrib "HREF") `map` bms
         forM_ (zip [1..] bms') $ \(n,(tag,b)) -> do
-            let bm = BM {bmTags=fromList $ splitOn "," tag,bmUrl=b}
+            let bm = BM {bmTags=fromList $ splitOn "," tag,bmUrl=b,bmTitle="title"}
             print (n :: Int,(tag,bm))
             tag' <- getTags . bmUrl $ bm
-            if isJust tag'
-                then do let bm' = bm {bmTags=fromList $ toList (bmTags bm) ++ splitOn "," (fromJust tag')}
-                        appendFile outFile $ "," ++ show bm ++ "\n"
-                        print bm'
-                        putStrLn ""
-                else putStrLn ""
+            when (isJust tag') $ do
+                let bm' = bm {bmTags=fromList $ toList (bmTags bm) ++ splitOn "," (fromJust tag')}
+                appendFile outFile $ "," ++ show bm ++ "\n"
+                print bm'
+            putStrLn ""
         appendFile outFile "\n]\n"
 
 getTags :: String -> IO (Maybe String)
