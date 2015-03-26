@@ -123,12 +123,12 @@ main = do args <- getArgs
           let (actions, _nonOpts, _errs) = getOpt RequireOrder options args
               opts = foldl (flip ($)) defaultOptions actions
               argListTags = optListTags opts
-              argSearch = optSearch opts
+              searchTags = optSearch opts
               argDbFile = optDbFile opts
               argDelete = optDelete opts
-              argOpenTags = optOpenTags opts
+              tagsToOpen = optOpenTags opts
               shouldPrompt = optPrompt opts
-              argInteractive = optInteractive opts
+              shouldStartRepl = optInteractive opts
               (shouldImport, argImportFile) = optImportFile opts
               (shouldExport, argExFile) = optExFile opts
               (argUpdOldTags, argUpdNewTags) = optUpdate opts
@@ -137,24 +137,27 @@ main = do args <- getArgs
           when argGetTitles $ do bms' <- forM bms getBmTitle
                                  length bms' `seq` writeFile argDbFile (showList bms')
                                  exitSuccess
-          when (isJust shouldImport) $ (case fromJust shouldImport of
-                                           HTML -> importBMsFromHtml
-                                           CSV  -> importBMsFromCSV)
-                                       bms argDbFile argImportFile
-                                    >> exitSuccess
-          when shouldExport $ exportBMs bms argExFile >> exitSuccess
-          when argInteractive $ repl opts bms >> exitSuccess
-          when (isJust argListTags) $ printStats (fromJust argListTags) bms
-                                   >> exitSuccess
-          unless (null argSearch) $ let searchResults = findByTags bms argSearch
-                                    in mapM_ printBM searchResults >> exitSuccess
-          unless (null argOpenTags) $ mapM_ (open shouldPrompt . bmUrl)
-                                            (findByTags bms argOpenTags)
-                                   >> exitSuccess
+          when (isJust shouldImport) $ do let import_ = case fromJust shouldImport of
+                                                            HTML -> importBMsFromHtml
+                                                            CSV  -> importBMsFromCSV
+                                          import_ bms argDbFile argImportFile
+                                          exitSuccess
+          when shouldExport $ do exportBMs bms argExFile
+                                 exitSuccess
+          when shouldStartRepl $ do repl opts bms
+                                    exitSuccess
+          when (isJust argListTags) $ do printStats (fromJust argListTags) bms
+                                         exitSuccess
+          unless (null searchTags) $ do let searchResults = findByTags bms searchTags
+                                        mapM_ printBM searchResults
+                                        exitSuccess
+          unless (null tagsToOpen) $ do mapM_ (open shouldPrompt . bmUrl)
+                                              (findByTags bms tagsToOpen)
+                                        exitSuccess
           unless (null argUpdOldTags) $ updateBMs opts bms argUpdOldTags argUpdNewTags
-                                     >> exitSuccess
+                                        >> exitSuccess
           unless (null argDelete) $ deleteBMs opts argDelete bms
-                                 >> exitSuccess
+                                    >> exitSuccess
           repl opts bms
 
 getBmTitle :: BM -> IO BM
@@ -213,13 +216,12 @@ repl opts bms = ignoreSignal sigINT $ do
           do putStrLn "exporting"
              repl opts bms)
          ,("OPEN" `isPrefixOf` cmd,
-          do putStrLn "opening..."
-             mapM_ (open shouldPrompt . bmUrl)
-                   (findByTags bms tags)
+          do let bms' = findByTags bms tags
+             putStrLn $ "opening " ++ show (length bms') ++ " links"
+             mapM_ (open shouldPrompt . bmUrl) bms'
              repl opts bms)
          ,("DELETE" `isPrefixOf` cmd,
-          do putStrLn "deleting"
-             bms' <- deleteBMs opts tags bms
+          do bms' <- deleteBMs opts tags bms
              repl opts bms')
          ,("UPDATE" `isPrefixOf` cmd,
           do putStrLn "updating"
@@ -302,10 +304,23 @@ updateBMs opts bms oldTags newTags = ignoreSignal keyboardSignal $ do
 deleteBMs :: Options -> [String] -> [BM] -> IO [BM]
 deleteBMs opts tags bms = ignoreSignal sigINT $ do
         let dbFile = optDbFile opts
-            _prompt = optPrompt opts
-            bms' = difference (fromList bms) (fromList $ findByTags bms tags)
+            shouldPrompt = optPrompt opts
+            bmsByTag = findByTags bms tags
+        tagsToDelete <- if shouldPrompt
+                            then sequence $ mapMaybe promptDelete bmsByTag
+                            else return bmsByTag
+        let bms' = difference (fromList bms) (fromList tagsToDelete)
         length bms `seq` writeFile dbFile . showList $ toList bms'
         return $ toList bms'
+    where
+        promptDelete :: BM -> Maybe (IO BM)
+        promptDelete bm = do void . return $ print bm
+                                 >> putStr "Are you sure you want to delete it?"
+                             void . return $ hFlush stdout
+                             let shouldDelete = readYN
+                             if unsafePerformIO shouldDelete
+                                 then Just $ return bm
+                                 else Nothing
 
 showList :: (Show a) => [a] -> String
 showList list = "[" ++ intercalate "\n," (map show list) ++ "]\n"
