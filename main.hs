@@ -299,15 +299,16 @@ exportBMs bms outFile = do
             let bef = before ++ "\n[\n"
                 aft =  "\n]\n" ++ after
                 bms' = map bmToJson bms
-            putStrLn "Done!"
+            putStrLn $ "Exported to (" ++ outFile ++ ")"
             return $ bef ++ intercalate "\n," bms' ++ aft
-
     where
         bmToJson :: BM -> String
         bmToJson (BM{bmUrl=url,bmTags=tags,bmTitle=title}) =
             printf "{\"title\":\"%s\",\"charset\":\"UTF-8\",\"tags\":\"%s\",\"type\":\"text/x-moz-place\",\"uri\":\"%s\"}"
-            (filter (`elem` (['a'..'z'] ++ ['A'..'Z'] ++ ['0'..'9'] ++ " -_=+;:|!@#$%^&*()[]{}/?<>,.")) title)
+            (filter (`elem` validChars) title)
             (intercalate "," $ toList tags) url
+        validChars = ['a'..'z'] ++ ['A'..'Z'] ++ ['0'..'9']
+                     ++ " -_=+;:|!@#$%^&*()[]{}/?<>,."
 
 -- For importing from a csv file with syntax: `url,title,..,tag`
 importBMsFromCSV :: [BM] -> String -> String -> IO ()
