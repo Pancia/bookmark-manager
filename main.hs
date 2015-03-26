@@ -71,7 +71,7 @@ options = [Option "s" ["search"] (ReqArg readSearch "TAGS")"search by TAGS"
           ,Option "i" ["import"] (OptArg readImport "FILE") "import from FILE to db"
           ,Option "e" ["export"] (OptArg readExFile "FILE") "export as html to FILE"
           ,Option "o" ["open"] (ReqArg readOpenTags "TAGS") "open matching TAGS"
-          ,Option "t" ["list-tags"] (OptArg readListTags "OPT") "list all tags"
+          ,Option "t" ["stats"] (OptArg readListTags "OPT") "list all tags"
           ,Option "u" ["update"] (ReqArg readUpdate "TAGS#NTAGS") "replace TAGS with NTAGS"
           ,Option "d" ["delete"] (ReqArg readDelete "TAGS") "delete matching TAGS"
           ,Option "p" ["prompt"] (NoArg readPrompt) "prompt before del/upd/..."
@@ -330,15 +330,16 @@ open shouldPrompt url = ignoreSignal sigINT $
         then do
             shouldOpenUrl <- readYN url
             if shouldOpenUrl
-                then open' False url
+                then openInFg False url
                 else return $ Just ""
-        else open' True url
+        else openInFg True url
     where
-        open' :: Bool -> URL -> IO (Maybe String)
-        open' inForeground url' = do
-            let inBgFlag = if not inForeground then "-g" else ""
+        openInFg :: Bool -> URL -> IO (Maybe String)
+        openInFg inFg url' = do
+            let inBgFlag = if not inFg then "-g" else ""
             threadDelay (250*1000)
-            (_,_,_,pHandle) <- createProcess (proc "open" [inBgFlag, url'])
+            let openProc = proc "open" (filter (/= "") [inBgFlag, url'])
+            (_,_,_,pHandle) <- createProcess openProc
             void $ waitForProcess pHandle
             return $ Just url'
 
@@ -348,6 +349,7 @@ readYN prompt = do
         line <- getLine
         return $ map toLower line `elem` ["yes","y",""]
 
+-- TODO: Test with a bm with all sorts of chars
 exportBMs :: [BM] -> String -> IO ()
 exportBMs bms dbFile = do
         before <- readFile "before.json"
