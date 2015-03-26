@@ -109,6 +109,10 @@ data BM = BM { bmTags :: Set TAG
              , bmUrl :: URL
              , bmTitle :: TITLE
              } deriving (Show, Read, Eq, Ord)
+mkBM :: [TAG] -> URL -> TITLE -> BM
+mkBM = BM . fromList
+dfltTitle :: String
+dfltTitle = "autogen_title"
 
 ignoreSignal :: Signal -> IO a -> IO a
 ignoreSignal sig = bracket (install Ignore) install . const
@@ -123,39 +127,39 @@ main = do args <- getArgs
               argDbFile = optDbFile opts
               argDelete = optDelete opts
               argOpenTags = optOpenTags opts
-              argPrompt = optPrompt opts
+              shouldPrompt = optPrompt opts
               argInteractive = optInteractive opts
-              (argImport, argImportFile) = optImportFile opts
-              (argEx, argExFile) = optExFile opts
+              (shouldImport, argImportFile) = optImportFile opts
+              (shouldExport, argExFile) = optExFile opts
               (argUpdOldTags, argUpdNewTags) = optUpdate opts
               argGetTitles = optGetTitles opts
           bms <- liftM read (readFile argDbFile)
           when argGetTitles $ do bms' <- forM bms getBmTitle
                                  length bms' `seq` writeFile argDbFile (showList bms')
                                  exitSuccess
-          when (isJust argImport) $ (case fromJust argImport of
-                                         HTML -> importBMsFromHtml
-                                         CSV  -> importBMsFromCSV)
-                                    bms argImportFile argDbFile
-                                 >> exitSuccess
-          when argEx $ exportBMs bms argExFile >> exitSuccess
+          when (isJust shouldImport) $ (case fromJust shouldImport of
+                                           HTML -> importBMsFromHtml
+                                           CSV  -> importBMsFromCSV)
+                                       bms argDbFile argImportFile
+                                    >> exitSuccess
+          when shouldExport $ exportBMs bms argExFile >> exitSuccess
           when argInteractive $ repl opts bms >> exitSuccess
           when (isJust argListTags) $ printStats (fromJust argListTags) bms
                                    >> exitSuccess
           unless (null argSearch) $ let searchResults = findByTags bms argSearch
                                     in mapM_ printBM searchResults >> exitSuccess
-          unless (null argOpenTags) $ mapM_ (open argPrompt . bmUrl)
+          unless (null argOpenTags) $ mapM_ (open shouldPrompt . bmUrl)
                                             (findByTags bms argOpenTags)
                                    >> exitSuccess
           unless (null argUpdOldTags) $ updateBMs opts bms argUpdOldTags argUpdNewTags
                                      >> exitSuccess
-          unless (null argDelete) $ removeBMs opts argDelete bms
+          unless (null argDelete) $ deleteBMs opts argDelete bms
                                  >> exitSuccess
           repl opts bms
 
 getBmTitle :: BM -> IO BM
 getBmTitle bm@(BM{bmUrl=url,bmTitle=title})
-        | title == "autogen_title" = do
+        | title == dfltTitle = do
             let opts = defaults & redirects .~ 1
                 handler :: HttpException -> IO (Maybe (Response ByteString))
                 handler = const $ return Nothing
@@ -179,20 +183,29 @@ getTitleFromHtml html = let tags = parseTags html
 
 repl :: Options -> [BM] -> IO ()
 repl opts bms = ignoreSignal sigINT $ do
-    putStr "[ EXIT | LIST | IMPORT | EXPORT | OPEN | DELETE | UPDATE | tags+ ]\n>?"
+    let shouldPrompt = optPrompt opts
+        dbFile = optDbFile opts
+    putStr "[ EXIT | ADD | STATS | IMPORT | EXPORT | OPEN | DELETE | UPDATE | tags+ ]\n>?"
     hFlush stdout
-    (cmd:extra) <- liftM (splitOn ",") getLine
-    let cmdTags = tail $ splitOn " " cmd
+    (cmd:tags) <- liftM (splitOn " ") getLine
     cond [(cmd == "",
           repl opts bms)
          ,(cmd == "EXIT",
           do writeFile ".done" "done!\n"
              putStrLn "Shutting Down")
-         ,("LIST" `isPrefixOf` cmd,
-          do if not (null cmdTags)
-                 then printStats False (findByTags bms cmdTags)
+         ,("STATS" `isPrefixOf` cmd,
+          do if not (null tags)
+                 then printStats False (findByTags bms tags)
                  else printStats False bms
              repl opts bms)
+         ,("ADD" `isPrefixOf` cmd,
+          do bms' <- if null tags
+                         then do bm <- getBM "" []
+                                 addBM dbFile bms bm
+                         else do let [url,tags'] = splitOn "#" (head tags)
+                                 bm <- getBM url (splitOn "," tags')
+                                 addBM dbFile bms bm
+             repl opts bms')
          ,("IMPORT" `isPrefixOf` cmd,
           do putStrLn "importing"
              repl opts bms)
@@ -200,19 +213,45 @@ repl opts bms = ignoreSignal sigINT $ do
           do putStrLn "exporting"
              repl opts bms)
          ,("OPEN" `isPrefixOf` cmd,
-          do putStrLn "opening"
+          do putStrLn "opening..."
+             mapM_ (open shouldPrompt . bmUrl)
+                   (findByTags bms tags)
              repl opts bms)
          ,("DELETE" `isPrefixOf` cmd,
           do putStrLn "deleting"
-             repl opts bms)
+             bms' <- deleteBMs opts tags bms
+             repl opts bms')
          ,("UPDATE" `isPrefixOf` cmd,
           do putStrLn "updating"
              repl opts bms)
          ,(otherwise,
-          do let bms' = findByTags bms (cmd:extra)
+          do let bms' = findByTags bms (cmd:tags)
              putStr . showList $ bms'
              putStrLn $ "Num of found items: " ++ show (length bms') ++ "\n"
              repl opts bms)]
+    where
+        getBM :: String -> [String] -> IO BM
+        getBM url tags
+            | null url =
+                do putStr "[url#tags]>? " >> hFlush stdout
+                   input <- getLine
+                   let [url',tags'] = splitOn "#" input
+                       bm = makeBM (splitOn "," tags') url'
+                   getTitleForBm bm
+            | otherwise =
+                do let bm = makeBM tags url
+                   getTitleForBm bm
+            where
+                makeBM tags_ url_ = mkBM tags_ url_ dfltTitle
+                getTitleForBm b = do
+                    b' <- getBmTitle b
+                    print b'
+                    return b'
+
+addBM :: String -> [BM] -> BM -> IO [BM]
+addBM dbFile bms bm = do
+    length bms `seq` writeFile dbFile (showList $ bm:bms)
+    return (bm:bms)
 
 printStats :: Bool -> [BM] -> IO ()
 printStats shouldConcat bms
@@ -242,15 +281,16 @@ frequencies = map (head &&& length) . group . sort
 findByTags :: [BM] -> [String] -> [BM]
 findByTags bms tags = filter (=?< tags) bms
 
-updateBMs :: Options -> [BM] -> [String] -> [String] -> IO ()
+updateBMs :: Options -> [BM] -> [String] -> [String] -> IO [BM]
 updateBMs opts bms oldTags newTags = ignoreSignal keyboardSignal $ do
-        let outFile = optDbFile opts
+        let dbFile = optDbFile opts
             shouldPrompt = optPrompt opts
-        newBms <- forM bms (promptThenReplace shouldPrompt)
-        length bms `seq` writeFile outFile (showList newBms)
+        newBms <- forM bms (maybeReplace shouldPrompt)
+        length bms `seq` writeFile dbFile (showList newBms)
+        return newBms
     where
-        promptThenReplace :: Bool -> BM -> IO BM
-        promptThenReplace shouldPrompt bm =
+        maybeReplace :: Bool -> BM -> IO BM
+        maybeReplace shouldPrompt bm =
             if (bm =?< oldTags) && (not shouldPrompt || unsafePerformIO (printBM bm >> readYN))
                 then return $ replace bm oldTags newTags
                 else return bm
@@ -259,12 +299,13 @@ updateBMs opts bms oldTags newTags = ignoreSignal keyboardSignal $ do
             let tags' = filter (not . (`elem` old)) (toList tags)
             in bm {bmTags=fromList $ tags' ++ new}
 
-removeBMs :: Options -> [String] -> [BM] -> IO ()
-removeBMs opts tags bms = ignoreSignal sigINT $ do
-        let outFile = optDbFile opts
+deleteBMs :: Options -> [String] -> [BM] -> IO [BM]
+deleteBMs opts tags bms = ignoreSignal sigINT $ do
+        let dbFile = optDbFile opts
             _prompt = optPrompt opts
             bms' = difference (fromList bms) (fromList $ findByTags bms tags)
-        length bms `seq` writeFile outFile . showList $ toList bms'
+        length bms `seq` writeFile dbFile . showList $ toList bms'
+        return $ toList bms'
 
 showList :: (Show a) => [a] -> String
 showList list = "[" ++ intercalate "\n," (map show list) ++ "]\n"
@@ -292,14 +333,14 @@ readYN = do putStr "\n[Y/n]?"
                          _ -> False
 
 exportBMs :: [BM] -> String -> IO ()
-exportBMs bms outFile = do
+exportBMs bms dbFile = do
         before <- readFile "before.json"
         after <- readFile "after.json"
-        writeFile outFile =<< do
+        writeFile dbFile =<< do
             let bef = before ++ "\n[\n"
                 aft =  "\n]\n" ++ after
                 bms' = map bmToJson bms
-            putStrLn $ "Exported to (" ++ outFile ++ ")"
+            putStrLn $ "Exported to (" ++ dbFile ++ ")"
             return $ bef ++ intercalate "\n," bms' ++ aft
     where
         bmToJson :: BM -> String
@@ -311,13 +352,14 @@ exportBMs bms outFile = do
                      ++ " -_=+;:|!@#$%^&*()[]{}/?<>,."
 
 -- For importing from a csv file with syntax: `url,title,..,tag`
+-- TODO: Add "imported_csv" tag
 importBMsFromCSV :: [BM] -> String -> String -> IO ()
-importBMsFromCSV bms csvFile outFile = do
+importBMsFromCSV bms csvFile dbFile = do
         rsavedCSV <- readFile csvFile
         let savedLines = drop 1 . splitOn "\n" $ rsavedCSV
         rsaved <- return . mapMaybe (csvToBM . splitOn ",") $ savedLines
         printStats True rsaved
-        length bms `seq` writeFile outFile (showList (bms ++ rsaved))
+        length bms `seq` writeFile dbFile (showList (bms ++ rsaved))
     where
         csvToBM :: [String] -> Maybe BM
         csvToBM [url,title,_,tag] = Just BM {bmUrl=url,bmTitle=title,bmTags=fromList [tag]}
@@ -325,23 +367,24 @@ importBMsFromCSV bms csvFile outFile = do
 
 -- For importing from an HTML file with `<a href=".." tags="word[,word]+">`
 -- TODO: Don't overwrite dbFile
+--       Don't prompt for input, instead add "imported_html" tag
 importBMsFromHtml :: [BM] -> String -> String -> IO ()
-importBMsFromHtml _bms dbFile outFile = do
-        tags <- return . parseTags =<< readFile dbFile
-        writeFile outFile "[BM {bmTags = fromList [\"\"], bmUrl = \"\"}"
+importBMsFromHtml _bms dbFile htmlFile = do
+        tags <- return . parseTags =<< readFile htmlFile
+        writeFile dbFile "[BM {bmTags = fromList [\"\"], bmUrl = \"\"}"
         let bms :: [Tag String]
             bms = filter (tagOpenLit "A" (const True)) tags
             bms' = (fromAttrib "TAGS" &&& fromAttrib "HREF") `map` bms
         forM_ (zip [1..] bms') $ \(n,(tag,b)) -> do
-            let bm = BM {bmTags=fromList $ splitOn "," tag,bmUrl=b,bmTitle="autogen_title"}
+            let bm = BM {bmTags=fromList $ splitOn "," tag,bmUrl=b,bmTitle=dfltTitle}
             print (n :: Int,(tag,bm))
             tag' <- getTags . bmUrl $ bm
             when (isJust tag') $ do
                 let bm' = bm {bmTags=fromList $ toList (bmTags bm) ++ splitOn "," (fromJust tag')}
-                appendFile outFile $ "," ++ show bm ++ "\n"
+                appendFile dbFile $ "," ++ show bm ++ "\n"
                 print bm'
             putStrLn ""
-        appendFile outFile "\n]\n"
+        appendFile dbFile "\n]\n"
 
 getTags :: String -> IO (Maybe String)
 getTags bm = do
