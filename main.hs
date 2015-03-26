@@ -179,7 +179,8 @@ getTitleFromHtml html = let tags = parseTags html
 
 repl :: Options -> [BM] -> IO ()
 repl opts bms = ignoreSignal sigINT $ do
-    putStr "[ EXIT | LIST | tags+ ]?" >> hFlush stdout
+    putStr "[ EXIT | LIST | IMPORT | EXPORT | OPEN | DELETE | UPDATE | tags+ ]\n>?"
+    hFlush stdout
     (cmd:extra) <- liftM (splitOn ",") getLine
     let cmdTags = tail $ splitOn " " cmd
     cond [(cmd == "",
@@ -303,9 +304,10 @@ exportBMs bms outFile = do
 
     where
         bmToJson :: BM -> String
-        bmToJson (BM{bmUrl=url,bmTags=tags,bmTitle=_title}) =
+        bmToJson (BM{bmUrl=url,bmTags=tags,bmTitle=title}) =
             printf "{\"title\":\"%s\",\"charset\":\"UTF-8\",\"tags\":\"%s\",\"type\":\"text/x-moz-place\",\"uri\":\"%s\"}"
-            url (intercalate "," $ toList tags) url
+            (filter (`elem` (['a'..'z'] ++ ['A'..'Z'] ++ ['0'..'9'] ++ " -_=+;:|!@#$%^&*()[]{}/?<>,.")) title)
+            (intercalate "," $ toList tags) url
 
 -- For importing from a csv file with syntax: `url,title,..,tag`
 importBMsFromCSV :: [BM] -> String -> String -> IO ()
