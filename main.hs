@@ -109,10 +109,12 @@ data BM = BM { bmTags :: Set TAG
              , bmUrl :: URL
              , bmTitle :: TITLE
              } deriving (Show, Read, Eq, Ord)
-mkBM :: [TAG] -> URL -> TITLE -> BM
-mkBM = BM . fromList
 dfltTitle :: String
 dfltTitle = "autogen_title"
+mkBM :: [TAG] -> URL -> TITLE -> BM
+mkBM = BM . fromList
+printBM :: BM -> IO ()
+printBM = print . (bmTags &&& bmUrl)
 
 ignoreSignal :: Signal -> IO a -> IO a
 ignoreSignal sig = bracket (install Ignore) install . const
@@ -188,7 +190,7 @@ repl :: Options -> [BM] -> IO ()
 repl opts bms = ignoreSignal sigINT $ do
     let shouldPrompt = optPrompt opts
         dbFile = optDbFile opts
-    putStr "[ EXIT | ADD | STATS | IMPORT | EXPORT | OPEN | DELETE | UPDATE | tags+ ]\n>?"
+    putStr "[ EXIT | ADD | STATS | IMPORT | EXPORT | OPEN | DELETE | UPDATE | tags+ ]\n>$"
     hFlush stdout
     (cmd:tags) <- liftM (splitOn " ") getLine
     cond [(cmd == "",
@@ -235,7 +237,7 @@ repl opts bms = ignoreSignal sigINT $ do
         getBM :: String -> [String] -> IO BM
         getBM url tags
             | null url =
-                do putStr "[url#tags]>? " >> hFlush stdout
+                do putStr "[url#tags]>$" >> hFlush stdout
                    input <- getLine
                    let [url',tags'] = splitOn "#" input
                        bm = makeBM (splitOn "," tags') url'
@@ -267,9 +269,8 @@ printStats shouldConcat bms
                         putStrLn $ "Total: " ++ numBMs
     where tags = map (toList . bmTags) bms
           numBMs = show (length bms)
-
-frequencies :: (Ord a) => [a] -> [(a, Int)]
-frequencies = map (head &&& length) . group . sort
+          frequencies :: (Ord a) => [a] -> [(a, Int)]
+          frequencies = map (head &&& length) . group . sort
 
 (=?<) :: BM -> [String] -> Bool
 (=?<) (BM{bmTags=tags}) searchTags
@@ -293,7 +294,9 @@ updateBMs opts bms oldTags newTags = ignoreSignal keyboardSignal $ do
     where
         maybeReplace :: Bool -> BM -> IO BM
         maybeReplace shouldPrompt bm =
-            if (bm =?< oldTags) && (not shouldPrompt || unsafePerformIO (printBM bm >> readYN))
+            if (bm =?< oldTags)
+                && (not shouldPrompt
+                   || unsafePerformIO (readYN $ show bm))
                 then return $ replace bm oldTags newTags
                 else return bm
         replace :: BM -> [String] -> [String] -> BM
@@ -314,38 +317,37 @@ deleteBMs opts tags bms = ignoreSignal sigINT $ do
         return $ toList bms'
     where
         promptDelete :: BM -> Maybe (IO BM)
-        promptDelete bm = do void . return $ print bm
-                                 >> putStr "Are you sure you want to delete it?"
-                             void . return $ hFlush stdout
-                             let shouldDelete = readYN
-                             if unsafePerformIO shouldDelete
+        promptDelete bm = do let prompt = show bm ++ "\nDelete the above BM?"
+                             if unsafePerformIO (readYN prompt)
                                  then Just $ return bm
                                  else Nothing
 
 showList :: (Show a) => [a] -> String
 showList list = "[" ++ intercalate "\n," (map show list) ++ "]\n"
 
-printBM :: BM -> IO ()
-printBM = print . (bmTags &&& bmUrl)
-
 open :: Bool -> URL -> IO (Maybe String)
 open shouldPrompt url = ignoreSignal sigINT $
-    if not shouldPrompt || unsafePerformIO (putStr url >> readYN)
+    if shouldPrompt
         then do
-            -- open has trouble when opening too many processes
+            shouldOpenUrl <- readYN url
+            if shouldOpenUrl
+                then open' False url
+                else return $ Just ""
+        else open' True url
+    where
+        open' :: Bool -> URL -> IO (Maybe String)
+        open' inForeground url' = do
+            let inBgFlag = if not inForeground then "-g" else ""
             threadDelay (250*1000)
-            (_,_,_,pHandle) <- createProcess (proc "open" [url])
-            waitForProcess pHandle >> return (Just "")
-        else return (Just "")
+            (_,_,_,pHandle) <- createProcess (proc "open" [inBgFlag, url'])
+            void $ waitForProcess pHandle
+            return $ Just url'
 
-readYN :: IO Bool
-readYN = do putStr "\n[Y/n]?"
-            line <- getLine
-            return $ case map toLower line of
-                         "yes" -> True
-                         "y" -> True
-                         "" -> True
-                         _ -> False
+readYN :: String -> IO Bool
+readYN prompt = do
+        putStrLn $ prompt ++ "\n[Y/n]$"
+        line <- getLine
+        return $ map toLower line `elem` ["yes","y",""]
 
 exportBMs :: [BM] -> String -> IO ()
 exportBMs bms dbFile = do
@@ -353,7 +355,7 @@ exportBMs bms dbFile = do
         after <- readFile "after.json"
         writeFile dbFile =<< do
             let bef = before ++ "\n[\n"
-                aft =  "\n]\n" ++ after
+                aft = "\n]\n" ++ after
                 bms' = map bmToJson bms
             putStrLn $ "Exported to (" ++ dbFile ++ ")"
             return $ bef ++ intercalate "\n," bms' ++ aft
