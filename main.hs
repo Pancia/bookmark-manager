@@ -240,13 +240,12 @@ repl opts bms = ignoreSignal sigINT $ do
                 do putStr "[url#tags]>$" >> hFlush stdout
                    input <- getLine
                    let [url',tags'] = splitOn "#" input
-                       bm = makeBM (splitOn "," tags') url'
+                       bm = mkBM (splitOn "," tags') url' dfltTitle
                    getTitleForBm bm
             | otherwise =
-                do let bm = makeBM tags url
+                do let bm = mkBM tags url dfltTitle
                    getTitleForBm bm
             where
-                makeBM tags_ url_ = mkBM tags_ url_ dfltTitle
                 getTitleForBm b = do
                     b' <- getBmTitle b
                     print b'
