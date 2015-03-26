@@ -179,13 +179,36 @@ getTitleFromHtml html = let tags = parseTags html
 
 repl :: Options -> [BM] -> IO ()
 repl opts bms = ignoreSignal sigINT $ do
-    putStr "[Tags]?" >> hFlush stdout
-    tags <- liftM (splitOn ",") getLine
-    cond [(tags `elem` [["exit"],["stop"],["abort"],["quit"]],
+    putStr "[ EXIT | LIST | tags+ ]?" >> hFlush stdout
+    (cmd:extra) <- liftM (splitOn ",") getLine
+    let cmdTags = tail $ splitOn " " cmd
+    cond [(cmd == "",
+          repl opts bms)
+         ,(cmd == "EXIT",
           do writeFile ".done" "done!\n"
              putStrLn "Shutting Down")
+         ,("LIST" `isPrefixOf` cmd,
+          do if not (null cmdTags)
+                 then printStats False (findByTags bms cmdTags)
+                 else printStats False bms
+             repl opts bms)
+         ,("IMPORT" `isPrefixOf` cmd,
+          do putStrLn "importing"
+             repl opts bms)
+         ,("EXPORT" `isPrefixOf` cmd,
+          do putStrLn "exporting"
+             repl opts bms)
+         ,("OPEN" `isPrefixOf` cmd,
+          do putStrLn "opening"
+             repl opts bms)
+         ,("DELETE" `isPrefixOf` cmd,
+          do putStrLn "deleting"
+             repl opts bms)
+         ,("UPDATE" `isPrefixOf` cmd,
+          do putStrLn "updating"
+             repl opts bms)
          ,(otherwise,
-          do let bms' = findByTags bms tags
+          do let bms' = findByTags bms (cmd:extra)
              putStr . showList $ bms'
              putStrLn $ "Num of found items: " ++ show (length bms') ++ "\n"
              repl opts bms)]
