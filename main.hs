@@ -161,7 +161,7 @@ getBmTitle bm@(BM{bmUrl=url,bmTitle=title})
                 handler = const $ return Nothing
             r <- liftM Just (getWith opts url) `catch` handler
             if isNothing r
-                then return bm{bmTitle="failed"}
+                then return bm{bmTitle=url}
                 else do let str = fromJust r ^. responseBody
                             title' = getTitleFromHtml $ unpack str
                             bm' = bm{bmTitle=either (const url) id title'}
