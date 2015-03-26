@@ -404,13 +404,13 @@ importBMsFromHtml _bms dbFile htmlFile = do
             putStrLn ""
         appendFile dbFile "\n]\n"
 
+-- TODO: switch to cond, so we can do `tag `elem` ["d","del",...]`
 getTags :: String -> IO (Maybe String)
 getTags bm = do
         tag <- getLine
-        return $ case tag of
-                     "d" -> Nothing
-                     "s" -> Just ""
-                     "o" -> do void $ unsafePerformIO (open True bm)
-                               unsafePerformIO (getTags bm)
-                     "" -> unsafePerformIO (getTags bm)
-                     _ -> Just tag
+        case tag of
+            "d" -> return Nothing
+            "s" -> return $ Just ""
+            "o" -> open True bm >> getTags bm
+            "" -> getTags bm
+            _ -> return $ Just tag
