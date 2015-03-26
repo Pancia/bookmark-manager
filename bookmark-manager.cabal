@@ -2,7 +2,7 @@ name:                bookmark-manager
 version:             0.1.0.0
 author:              Anthony D'Ambrosio
 maintainer:          nsa.anthony@gmail.com
---homepage:            https://github.com/Pancia/loki-lang
+homepage:            https://github.com/Pancia/bookmark-manager
 license:             MIT
 license-file:        LICENSE
 category:            Language
@@ -11,9 +11,9 @@ cabal-version:       >=1.18
 synopsis:            Bookmark Manager
 description:         Bookmark Manager
 
---source-repository head
--- type:     git
---  location: https://github.com/Pancia/loki-lang
+source-repository head
+    type:     git
+    location: https://github.com/Pancia/bookmark-manager
 
 executable bookmark-manager
     main-is: main.hs
@@ -24,5 +24,9 @@ executable bookmark-manager
                    unix == 2.7.*,
                    tagsoup == 0.13.*,
                    split == 0.2.*,
-                   containers == 0.5.*
+                   containers == 0.5.*,
+                   bytestring == 0.10.*,
+                   lens == 4.*,
+                   wreq == 0.3.*,
+                   http-client == 0.4.*
     default-language: Haskell2010

@@ -1,3 +1,5 @@
+{-# LANGUAGE OverloadedStrings #-}
+
 module Main where
 
 import Prelude hiding (showList)
@@ -15,6 +17,7 @@ import Data.Set (Set, difference, fromList, toList)
 import System.Console.GetOpt
 import System.Environment
 import System.Exit
+import System.IO (hFlush, stdout)
 import System.Posix.Signals
 import System.Process
 import Text.HTML.TagSoup
@@ -22,8 +25,19 @@ import Text.HTML.TagSoup.Match
 import Text.Printf
 
 import System.IO.Unsafe
+import Debug.Trace
 
-data ImportType = CSV | HTML deriving (Show)
+import Network.Wreq hiding (options, Options)
+import Network.HTTP.Client (HttpException)
+import Control.Lens
+import Data.ByteString.Lazy.Char8 (ByteString, unpack)
+
+infixl 0 ?>
+(?>) :: (Show a) => a -> String -> a
+(?>) a str = trace (str ++ ": " ++ show a) a
+
+data ImportType = CSV | HTML
+                deriving (Show)
 data Options = Options { optSearch :: [String]
                        , optDbFile :: String
                        , optExFile :: (Bool, String)
@@ -34,6 +48,7 @@ data Options = Options { optSearch :: [String]
                        , optInteractive :: Bool
                        , optPrompt :: Bool
                        , optImportFile :: (Maybe ImportType,String)
+                       , optGetTitles :: Bool
                        } deriving (Show)
 
 defaultOptions :: Options
@@ -47,6 +62,7 @@ defaultOptions = Options { optSearch = []
                          , optUpdate = ([],[])
                          , optInteractive = False
                          , optPrompt = False
+                         , optGetTitles = False
                          }
 
 options :: [OptDescr (Options -> Options)]
@@ -60,8 +76,10 @@ options = [Option "s" ["search"] (ReqArg readSearch "TAGS")"search by TAGS"
           ,Option "d" ["delete"] (ReqArg readDelete "TAGS") "delete matching TAGS"
           ,Option "p" ["prompt"] (NoArg readPrompt) "prompt before del/upd/..."
           ,Option "r" ["repl"] (NoArg readInteractive) "enter repl mode"
+          ,Option "" ["get-titles"] (NoArg readGetTitles) "get titles for bms with autogen'ed titles"
           ]
     where
+        readGetTitles opts = opts {optGetTitles = True}
         readImport arg opts@(Options {optImportFile=(_,dflt)}) =
             opts {optImportFile = (Just argType,arg')}
             where
@@ -110,7 +128,11 @@ main = do args <- getArgs
               (argImport, argImportFile) = optImportFile opts
               (argEx, argExFile) = optExFile opts
               (argUpdOldTags, argUpdNewTags) = optUpdate opts
+              argGetTitles = optGetTitles opts
           bms <- liftM read (readFile argDbFile)
+          when argGetTitles $ do bms' <- forM bms getBmTitle
+                                 length bms' `seq` writeFile argDbFile (showList bms')
+                                 exitSuccess
           when (isJust argImport) $ (case fromJust argImport of
                                          HTML -> importBMsFromHtml
                                          CSV  -> importBMsFromCSV)
@@ -129,14 +151,39 @@ main = do args <- getArgs
                                      >> exitSuccess
           unless (null argDelete) $ removeBMs opts argDelete bms
                                  >> exitSuccess
+          repl opts bms
+
+getBmTitle :: BM -> IO BM
+getBmTitle bm@(BM{bmUrl=url,bmTitle=title})
+        | title == "autogen_title" = do
+            let opts = defaults & redirects .~ 1
+                handler :: HttpException -> IO (Maybe (Response ByteString))
+                handler = const $ return Nothing
+            r <- liftM Just (getWith opts url) `catch` handler
+            if isNothing r
+                then return bm{bmTitle="failed"}
+                else do let str = fromJust r ^. responseBody
+                            title' = getTitleFromHtml $ unpack str
+                            bm' = bm{bmTitle=either (const url) id title'}
+                        putStrLn $ show bm' ++ "\n"
+                        return bm'
+        | otherwise = return bm
+
+getTitleFromHtml :: String -> Either [Tag String] TITLE
+getTitleFromHtml html = let tags = parseTags html
+                            hasTitle = not . null $ filter (tagOpenLit "title" (const True)) tags
+                            titles = getTagContent "title" (const True) tags
+                        in if hasTitle && not (null titles)
+                               then Right . fromTagText . head $ titles
+                               else Left tags
 
 repl :: Options -> [BM] -> IO ()
 repl opts bms = ignoreSignal sigINT $ do
-    putStr "[Tags]?"
+    putStr "[Tags]?" >> hFlush stdout
     tags <- liftM (splitOn ",") getLine
     cond [(tags `elem` [["exit"],["stop"],["abort"],["quit"]],
           do writeFile ".done" "done!\n"
-             print "Shutting Down")
+             putStrLn "Shutting Down")
          ,(otherwise,
           do let bms' = findByTags bms tags
              putStr . showList $ bms'
@@ -155,6 +202,9 @@ printStats shouldConcat bms
                         putStrLn $ "Total: " ++ numBMs
     where tags = map (toList . bmTags) bms
           numBMs = show (length bms)
+
+frequencies :: (Ord a) => [a] -> [(a, Int)]
+frequencies = map (head &&& length) . group . sort
 
 (=?<) :: BM -> [String] -> Bool
 (=?<) (BM{bmTags=tags}) searchTags
@@ -197,9 +247,6 @@ showList list = "[" ++ intercalate "\n," (map show list) ++ "]\n"
 
 printBM :: BM -> IO ()
 printBM = print . (bmTags &&& bmUrl)
-
-frequencies :: (Ord a) => [a] -> [(a, Int)]
-frequencies = map (head &&& length) . group . sort
 
 open :: Bool -> URL -> IO (Maybe String)
 open shouldPrompt url = ignoreSignal sigINT $
@@ -260,7 +307,7 @@ importBMsFromHtml _bms dbFile outFile = do
             bms = filter (tagOpenLit "A" (const True)) tags
             bms' = (fromAttrib "TAGS" &&& fromAttrib "HREF") `map` bms
         forM_ (zip [1..] bms') $ \(n,(tag,b)) -> do
-            let bm = BM {bmTags=fromList $ splitOn "," tag,bmUrl=b,bmTitle="title"}
+            let bm = BM {bmTags=fromList $ splitOn "," tag,bmUrl=b,bmTitle="autogen_title"}
             print (n :: Int,(tag,bm))
             tag' <- getTags . bmUrl $ bm
             when (isJust tag') $ do
