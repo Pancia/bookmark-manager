@@ -3,7 +3,6 @@ module BookmarkManager where
 import Prelude hiding (appendFile, readFile, writeFile, showList, print, getLine, putStr, putStrLn)
 
 import Control.Arrow ((&&&))
-import Control.Concurrent
 import Control.Conditional hiding (unless, when)
 import Control.Exception
 import Control.Monad
@@ -13,8 +12,6 @@ import Data.List
 import Data.List.Split
 import Data.Maybe
 import Data.Set (Set, difference, fromList, toList)
-import System.IO (hFlush, stdout)
-import System.Process
 import Text.HTML.TagSoup
 import Text.HTML.TagSoup.Match
 import Text.Printf
@@ -55,7 +52,7 @@ getBmTitle bm@(BM{bmUrl=url,bmTitle=title})
                 else do let str = fromJust r ^. Network.responseBody
                             title' = getTitleFromHtml $ unpack str
                             bm' = bm{bmTitle=either (const url) id title'}
-                        putStrLn $ show bm' ++ "\n"
+                        putStrLn $ "\n" ++ show bm' ++ "\n"
                         return bm'
         | otherwise = return bm
 
@@ -68,9 +65,8 @@ getTitleFromHtml html = let tags = parseTags html
                                else Left tags
 
 repl :: (MonadIO m, MockIO m) => Options -> [BM] -> m ()
-repl opts_ bms = liftIO $ ignoreSigINT $ do
+repl opts_ bms = do
     putStr "[ EXIT | ADD | STATS | IMPORT | EXPORT | OPEN | DELETE | UPDATE | tags+ ]\n>$"
-    hFlush stdout
     (cmd:tags) <- liftM (splitOn " ") getLine
     let shouldPrompt = case last cmd of
                            '?' -> True
@@ -125,16 +121,10 @@ repl opts_ bms = liftIO $ ignoreSigINT $ do
                    input <- getLine
                    let [url',tags'] = splitOn "#" input
                        bm = mkBM (splitOn "," tags') url' dfltTitle
-                   getTitleForBm bm
+                   getBmTitle bm
             | otherwise =
                 do let bm = mkBM tags url dfltTitle
-                   getTitleForBm bm
-            where
-                getTitleForBm :: (MonadIO m, MockIO m) => BM -> m BM
-                getTitleForBm b = do
-                    b' <- getBmTitle b
-                    print b'
-                    return b'
+                   getBmTitle bm
 
 addBM :: (MockIO m) => String -> [BM] -> BM -> m [BM]
 addBM dbFile bms bm = do
@@ -168,8 +158,8 @@ printStats shouldConcat bms
 findByTags :: [BM] -> [String] -> [BM]
 findByTags bms tags = filter (=?< tags) bms
 
-updateBMs :: (MonadIO m, MockIO m) => Options -> [BM] -> [String] -> [String] -> m [BM]
-updateBMs opts bms oldTags newTags = liftIO $ ignoreSigINT $ do
+updateBMs :: (MockIO m) => Options -> [BM] -> [String] -> [String] -> m [BM]
+updateBMs opts bms oldTags newTags = do
         let dbFile = optDbFile opts
             shouldPrompt = optPrompt opts
         newBms <- forM bms (maybeReplace shouldPrompt)
@@ -189,7 +179,7 @@ updateBMs opts bms oldTags newTags = liftIO $ ignoreSigINT $ do
             in bm {bmTags=fromList $ tags' ++ new}
 
 deleteBMs :: (MonadIO m, MockIO m) => Options -> [String] -> [BM] -> m [BM]
-deleteBMs opts tags bms = liftIO $ ignoreSigINT $ do
+deleteBMs opts tags bms = do
         let dbFile = optDbFile opts
             shouldPrompt = optPrompt opts
             bmsByTag = findByTags bms tags
@@ -200,7 +190,7 @@ deleteBMs opts tags bms = liftIO $ ignoreSigINT $ do
         length bms `seq` writeFile dbFile . showList $ toList bms'
         return $ toList bms'
     where
-        promptDelete :: BM -> Maybe (IO BM)
+        promptDelete :: (MockIO m) => BM -> Maybe (m BM)
         promptDelete bm = do let prompt = show bm ++ "\nDelete the above BM?"
                              if unsafePerformIO (readYN prompt)
                                  then Just $ return bm
@@ -210,20 +200,19 @@ showList :: (Show a) => [a] -> String
 showList list = "[" ++ intercalate "\n," (map show list) ++ "]\n"
 
 openURL :: (MonadIO m, MockIO m) => Bool -> URL -> m ()
-openURL shouldPrompt url = liftIO $ ignoreSigINT $
+openURL shouldPrompt url =
     if shouldPrompt
         then do
             shouldOpenUrl <- readYN url
             when shouldOpenUrl $ openInFg False url
         else openInFg True url
     where
-        openInFg :: (Functor m, MonadIO m, MockIO m) => Bool -> URL -> m ()
+        openInFg :: (MonadIO m, MockIO m) => Bool -> URL -> m ()
         openInFg inFg url' = do
             let inBgFlag = if not inFg then "-g" else ""
-            liftIO $ threadDelay (250*1000)
-            let openProc = proc "open" (filter (/= "") [inBgFlag, url'])
-            (_,_,_,pHandle) <- liftIO $ createProcess openProc
-            void . liftIO $ waitForProcess pHandle
+            threadDelay (250*1000)
+            let openProc = "open " ++ (concat $ filter (/= "") [inBgFlag, url'])
+            exe openProc
 
 readYN :: (MockIO m) => String -> m Bool
 readYN prompt = do

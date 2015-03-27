@@ -1,28 +1,25 @@
 {-# LANGUAGE FlexibleInstances #-}
+{-# OPTIONS_GHC -fno-warn-orphans #-}
 module Utils where
 
 import Prelude hiding (putStrLn)
 import qualified Prelude
 
-import Control.Exception
+import qualified Control.Concurrent as Concurrent
+import Control.Monad.Identity
 import Control.Monad.State
 import Data.Char (toLower)
 import Data.List.Split
 import Data.Maybe (fromMaybe)
 import System.Console.GetOpt
 import System.IO (hFlush, stdout)
-import System.Posix.Signals
 import qualified Data.Map as M
+import qualified System.Process as P
 
+import System.IO.Unsafe
 import Debug.Trace
 
-ignoreSigINT :: IO a -> IO a
-ignoreSigINT = ignoreSignal sigINT
-
-ignoreSignal :: Signal -> IO a -> IO a
-ignoreSignal sig = bracket (install Ignore) install . const
-  where install handler = installHandler sig handler Nothing
-
+--TODO: Move to separate file (Flags.hs or Opts.hs)
 data ImportType = CSV | HTML
                 deriving (Show)
 data Options = Options { optSearch :: [String]
@@ -91,6 +88,11 @@ infixl 0 ?>
 (?>) :: (Show a) => a -> String -> a
 (?>) a str = trace (str ++ ": " ++ show a) a
 
+-- TODO: Move to separate file (MockIO.hs?)
+-- NOTE: FOR TESTING ONLY
+instance MonadIO Identity where
+        liftIO io = return $ unsafePerformIO io
+
 class Monad m => MockIO m where
         getLine :: m String
         putStr :: String -> m ()
@@ -99,6 +101,8 @@ class Monad m => MockIO m where
         readFile :: String -> m String
         writeFile :: FilePath -> String -> m ()
         appendFile :: FilePath -> String -> m ()
+        threadDelay :: Int -> m ()
+        exe :: String -> m ()
 
 instance MockIO IO where
         getLine = Prelude.getLine
@@ -109,6 +113,9 @@ instance MockIO IO where
         readFile = Prelude.readFile
         writeFile = Prelude.writeFile
         appendFile = Prelude.appendFile
+        exe p = do x <- P.spawnCommand p
+                   P.waitForProcess x >> return ()
+        threadDelay i = Concurrent.threadDelay i
 
 data MockData = MockData {
             mockInput  :: [String],
@@ -144,3 +151,8 @@ instance MockIO (State MockData) where
             mockData <- get
             put $ mockData {mockOutput = (s ++ "\n") : mockOutput mockData}
         print a = putStrLn (show a)
+        exe _ = return . unsafePerformIO $ unsafeExe "touch .open"
+        threadDelay _ = return ()
+
+unsafeExe :: String -> IO ()
+unsafeExe s = P.spawnCommand s >>= void . P.waitForProcess
