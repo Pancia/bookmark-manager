@@ -202,17 +202,9 @@ showList list = "[" ++ intercalate "\n," (map show list) ++ "]\n"
 openURL :: (MonadIO m, MockIO m) => Bool -> URL -> m ()
 openURL shouldPrompt url =
     if shouldPrompt
-        then do
-            shouldOpenUrl <- readYN url
-            when shouldOpenUrl $ openInFg False url
-        else openInFg True url
-    where
-        openInFg :: (MonadIO m, MockIO m) => Bool -> URL -> m ()
-        openInFg inFg url' = do
-            let inBgFlag = if not inFg then "-g" else ""
-            threadDelay (250*1000)
-            let openProc = "open " ++ (concat $ filter (/= "") [inBgFlag, url'])
-            exe openProc
+        then do shouldOpenUrl <- readYN url
+                when shouldOpenUrl $ open url True
+        else open url False
 
 readYN :: (MockIO m) => String -> m Bool
 readYN prompt = do

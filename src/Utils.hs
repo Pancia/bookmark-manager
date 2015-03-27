@@ -5,7 +5,7 @@ module Utils where
 import Prelude hiding (putStrLn)
 import qualified Prelude
 
-import qualified Control.Concurrent as Concurrent
+import Control.Concurrent (threadDelay)
 import Control.Monad.Identity
 import Control.Monad.State
 import Data.Char (toLower)
@@ -101,8 +101,7 @@ class Monad m => MockIO m where
         readFile :: String -> m String
         writeFile :: FilePath -> String -> m ()
         appendFile :: FilePath -> String -> m ()
-        threadDelay :: Int -> m ()
-        exe :: String -> m ()
+        open :: String -> Bool -> m ()
 
 instance MockIO IO where
         getLine = Prelude.getLine
@@ -113,14 +112,19 @@ instance MockIO IO where
         readFile = Prelude.readFile
         writeFile = Prelude.writeFile
         appendFile = Prelude.appendFile
-        exe p = do x <- P.spawnCommand p
-                   P.waitForProcess x >> return ()
-        threadDelay i = Concurrent.threadDelay i
+        open url inBg = do
+            let inBgFlag = if inBg then "-g" else ""
+            x <- P.spawnCommand ("open " ++ inBgFlag ++ url)
+            threadDelay (250*1000)
+            void $ P.waitForProcess x
 
+data Exe = Open String Bool
+         deriving (Show, Eq)
 data MockData = MockData {
             mockInput  :: [String],
             mockOutput :: [String],
-            mockFiles  :: M.Map FilePath String
+            mockFiles  :: M.Map FilePath String,
+            mockExeLog :: [Exe]
             } deriving (Show, Eq)
 
 instance MockIO (State MockData) where
@@ -151,8 +155,6 @@ instance MockIO (State MockData) where
             mockData <- get
             put $ mockData {mockOutput = (s ++ "\n") : mockOutput mockData}
         print a = putStrLn (show a)
-        exe _ = return . unsafePerformIO $ unsafeExe "touch .open"
-        threadDelay _ = return ()
-
-unsafeExe :: String -> IO ()
-unsafeExe s = P.spawnCommand s >>= void . P.waitForProcess
+        open url inBg = do
+            mockData <- get
+            put $ mockData {mockExeLog = Open url inBg : mockExeLog mockData}
