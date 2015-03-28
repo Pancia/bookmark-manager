@@ -35,8 +35,9 @@ data BM = BM { bmTags :: Set TAG
              } deriving (Show, Read, Eq, Ord)
 dfltTitle :: String
 dfltTitle = "autogen_title"
-mkBM :: [TAG] -> URL -> TITLE -> BM
-mkBM = BM . fromList
+mkBM :: (MonadIO m, MockIO m) => [TAG] -> URL -> m BM
+mkBM tags url = do let b = BM (fromList tags) url dfltTitle
+                   liftIO $ getBmTitle b
 printBM :: (MockIO m) => BM -> m ()
 printBM = print . (bmTags &&& bmUrl)
 
@@ -120,11 +121,10 @@ repl opts_ bms = do
                 do putStr "[url#tags]>$"
                    input <- getLine
                    let [url',tags'] = splitOn "#" input
-                       bm = mkBM (splitOn "," tags') url' dfltTitle
+                   bm <- mkBM (splitOn "," tags') url'
                    getBmTitle bm
             | otherwise =
-                do let bm = mkBM tags url dfltTitle
-                   getBmTitle bm
+                mkBM tags url >>= getBmTitle
 
 addBM :: (MockIO m) => String -> [BM] -> BM -> m [BM]
 addBM dbFile bms bm = do
@@ -237,14 +237,15 @@ importBMsFromCSV :: (MockIO m) => [BM] -> String -> String -> m ()
 importBMsFromCSV bms csvFile dbFile = do
         rsavedCSV <- readFile csvFile
         let savedLines = drop 1 . splitOn "\n" $ rsavedCSV
-        rsaved <- return . mapMaybe (csvToBM . splitOn ",") $ savedLines
+        rsaved <- return . mapMaybe (csvToTuple . splitOn ",") $ savedLines
         printStats True rsaved
         length bms `seq` writeFile dbFile (showList (bms ++ rsaved))
     where
-        csvToBM :: [String] -> Maybe BM
-        csvToBM [url,title,_,tag] = do let iTag = "imported_csv"
-                                       Just $ mkBM [iTag,tag] url title
-        csvToBM _ = Nothing
+        csvToTuple :: [String] -> Maybe BM
+        csvToTuple [url,title,_,tag] = do
+            let iTag = "imported_csv"
+            Just $ BM (fromList [iTag,tag]) url title
+        csvToTuple _ = Nothing
 
 -- For importing from an HTML file with `<a href=".." tags="tag,tags">`
 importBMsFromHtml :: (MonadIO m, MockIO m) => [BM] -> String -> String -> m ()
@@ -256,6 +257,6 @@ importBMsFromHtml dbBms dbFile htmlFile = do
             tagsNurls = ((splitOn "," . fromAttrib "TAGS") &&& fromAttrib "HREF")
                         `map` bms
         imported <- forM tagsNurls $
-            \(tags',url) -> do let bm = mkBM (iTag:tags') url dfltTitle
+            \(tags',url) -> do bm <- mkBM (iTag:tags') url
                                getBmTitle bm
         writeFile dbFile (showList $ dbBms ++ imported)

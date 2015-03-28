@@ -33,6 +33,7 @@ data Options = Options { optSearch :: [String]
                        , optPrompt :: Bool
                        , optImportFile :: (Maybe ImportType,String)
                        , optGetTitles :: Bool
+                       , optAddBm :: (Bool, String)
                        } deriving (Show)
 defaultOptions :: Options
 defaultOptions = Options { optSearch = []
@@ -46,6 +47,7 @@ defaultOptions = Options { optSearch = []
                          , optInteractive = False
                          , optPrompt = False
                          , optGetTitles = False
+                         , optAddBm = (False, "")
                          }
 options :: [OptDescr (Options -> Options)]
 options = [Option "s" ["search"] (ReqArg readSearch "TAGS")"search by TAGS"
@@ -58,9 +60,11 @@ options = [Option "s" ["search"] (ReqArg readSearch "TAGS")"search by TAGS"
           ,Option "d" ["delete"] (ReqArg readDelete "TAGS") "delete matching TAGS"
           ,Option "p" ["prompt"] (NoArg readPrompt) "prompt before del/upd/..."
           ,Option "r" ["repl"] (NoArg readInteractive) "enter repl mode"
+          ,Option "a" ["add"] (ReqArg readAddBm "URL#TAGS") "add bm with URL & TAGS"
           ,Option "" ["get-titles"] (NoArg readGetTitles) "get titles for bms with autogen'ed titles"
           ]
     where
+        readAddBm arg opts = opts {optAddBm = (True, arg)}
         readGetTitles opts = opts {optGetTitles = True}
         readImport arg opts@(Options {optImportFile=(_,dflt)}) =
             opts {optImportFile = (Just argType,arg')}
