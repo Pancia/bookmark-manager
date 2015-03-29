@@ -34,7 +34,7 @@ main = do args <- liftIO getArgs
           bms <- liftM read (readFile dbFile)
           cond [(argGetTitles
                 ,do bms' <- forM bms getBmTitle
-                    length bms' `seq` writeFile dbFile (showList bms'))
+                    length bms' `seq` writeFile dbFile (showBMs bms'))
 
                ,(isJust shouldImport
                 ,do let importBMs = case fromJust shouldImport of
@@ -62,7 +62,7 @@ main = do args <- liftIO getArgs
                     mapM_ printBM searchResults)
 
                ,(not $ null tagsToOpen
-                ,mapM_ (openURL shouldPrompt . bmUrl)
+                ,mapM_ (openBM shouldPrompt)
                        (findByTags bms tagsToOpen))
 
                ,(not $ null argUpdOldTags

@@ -139,14 +139,14 @@ instance MockIO (State MockData) where
                   return maybeFile
         writeFile filePath contents = do
             mockData <- get
-            let mockFiles' = mockFiles mockData
-                mockFiles'' = M.alter (\_ -> Just contents) filePath mockFiles'
-            put $ mockData {mockFiles = mockFiles''}
+            let fileSystem = mockFiles mockData
+                fileSystem' = M.alter (\_ -> Just contents) filePath fileSystem
+            put $ mockData {mockFiles = fileSystem'}
         appendFile filePath contents = do
             mockData <- get
-            let mockFiles' = mockFiles mockData
-                mockFiles'' = M.alter (\x -> Just (fromMaybe "" x ++ contents)) filePath mockFiles'
-            put $ mockData {mockFiles = mockFiles''}
+            let fileSystem = mockFiles mockData
+                fileSystem' = M.alter (Just . (++ contents) . fromMaybe "") filePath fileSystem
+            put $ mockData {mockFiles = fileSystem'}
         getLine = do
             mockData <- get
             let (line:extra) = mockInput mockData

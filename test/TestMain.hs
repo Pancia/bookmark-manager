@@ -5,4 +5,6 @@ import Test.Framework
 import {-@ HTF_TESTS @-} TestBookmarkManager
 
 main :: IO ()
-main = htfMainWithArgs ["--colors=true"] htf_importedTests
+main = do let testArgs = ["--colors=true"
+                         ,"--max-cur-ms=5000"]
+          htfMainWithArgs testArgs htf_importedTests

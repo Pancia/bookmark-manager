@@ -1,6 +1,27 @@
-module BookmarkManager where
+{-# LANGUAGE BangPatterns #-}
+module BookmarkManager
+(addBM
+,updateBMs
+,deleteBMs
+,openBM
+,exportBMs
+,importBMsFromCSV
+,importBMsFromHtml
+,repl
 
-import Prelude hiding (appendFile, readFile, writeFile, showList, print, getLine, putStr, putStrLn)
+,BM(BM)
+,setBmTags
+,mkBM
+,printBM
+
+,findByTags
+,getBmTitle
+,printStats
+,showBMs
+,readYN
+) where
+
+import Prelude hiding (appendFile,readFile,writeFile,showList,print,getLine,putStr,putStrLn)
 
 import Control.Arrow ((&&&))
 import Control.Conditional hiding (unless, when)
@@ -33,13 +54,17 @@ data BM = BM { bmTags :: Set TAG
              , bmUrl :: URL
              , bmTitle :: TITLE
              } deriving (Show, Read, Eq, Ord)
+setBmTags :: [TAG] -> BM -> BM
+setBmTags tags bm = bm {bmTags = fromList tags}
+
+printBM :: (MockIO m) => BM -> m ()
+printBM = print . (bmTags &&& bmUrl &&& bmTitle)
+
 dfltTitle :: String
 dfltTitle = "autogen_title"
+
 mkBM :: (MonadIO m, MockIO m) => [TAG] -> URL -> m BM
-mkBM tags url = do let b = BM (fromList tags) url dfltTitle
-                   liftIO $ getBmTitle b
-printBM :: (MockIO m) => BM -> m ()
-printBM = print . (bmTags &&& bmUrl)
+mkBM tags url = getBmTitle =<< return (BM (fromList tags) url dfltTitle)
 
 getBmTitle :: (MonadIO m, MockIO m) => BM -> m BM
 getBmTitle bm@(BM{bmUrl=url,bmTitle=title})
@@ -53,7 +78,6 @@ getBmTitle bm@(BM{bmUrl=url,bmTitle=title})
                 else do let str = fromJust r ^. Network.responseBody
                             title' = getTitleFromHtml $ unpack str
                             bm' = bm{bmTitle=either (const url) id title'}
-                        putStrLn $ "\n" ++ show bm' ++ "\n"
                         return bm'
         | otherwise = return bm
 
@@ -101,7 +125,7 @@ repl opts_ bms = do
          ,("OPEN" `isPrefixOf` cmd,
           do let bms' = findByTags bms tags
              putStrLn $ "opening " ++ show (length bms') ++ " links"
-             mapM_ (openURL shouldPrompt . bmUrl) bms'
+             mapM_ (openBM shouldPrompt) bms'
              repl opts bms)
          ,("DELETE" `isPrefixOf` cmd,
           do bms' <- deleteBMs opts tags bms
@@ -111,7 +135,7 @@ repl opts_ bms = do
              repl opts bms')
          ,(otherwise,
           do let bms' = findByTags bms (cmd:tags)
-             putStr . showList $ bms'
+             putStr . showBMs $ bms'
              putStrLn $ "Num of found items: " ++ show (length bms') ++ "\n"
              repl opts bms)]
     where
@@ -127,9 +151,10 @@ repl opts_ bms = do
                 mkBM tags url >>= getBmTitle
 
 addBM :: (MockIO m) => String -> [BM] -> BM -> m [BM]
-addBM dbFile bms bm = do
-    length bms `seq` writeFile dbFile (showList $ bm:bms)
-    return (bm:bms)
+addBM dbFile !bms bm = do
+        let bms' = bm:bms
+        writeFile dbFile (showBMs bms')
+        return bms'
 
 printStats :: (MockIO m) => Bool -> [BM] -> m ()
 printStats shouldConcat bms
@@ -146,6 +171,9 @@ printStats shouldConcat bms
           frequencies :: (Ord a) => [a] -> [(a, Int)]
           frequencies = map (head &&& length) . group . sort
 
+findByTags :: [BM] -> [String] -> [BM]
+findByTags bms tags = filter (=?< tags) bms
+
 (=?<) :: BM -> [String] -> Bool
 (=?<) (BM{bmTags=tags}) searchTags
     | null tags' = False
@@ -155,15 +183,12 @@ printStats shouldConcat bms
         allElemOf :: (Eq a) => [a] -> [a] -> Bool
         allElemOf xs = all (`elem` xs)
 
-findByTags :: [BM] -> [String] -> [BM]
-findByTags bms tags = filter (=?< tags) bms
-
 updateBMs :: (MockIO m) => Options -> [BM] -> [String] -> [String] -> m [BM]
-updateBMs opts bms oldTags newTags = do
+updateBMs opts !bms oldTags newTags = do
         let dbFile = optDbFile opts
             shouldPrompt = optPrompt opts
         newBms <- forM bms (maybeReplace shouldPrompt)
-        length bms `seq` writeFile dbFile (showList newBms)
+        writeFile dbFile (showBMs newBms)
         return newBms
     where
         maybeReplace :: (MockIO m) => Bool -> BM -> m BM
@@ -179,7 +204,7 @@ updateBMs opts bms oldTags newTags = do
             in bm {bmTags=fromList $ tags' ++ new}
 
 deleteBMs :: (MonadIO m, MockIO m) => Options -> [String] -> [BM] -> m [BM]
-deleteBMs opts tags bms = do
+deleteBMs opts tags !bms = do
         let dbFile = optDbFile opts
             shouldPrompt = optPrompt opts
             bmsByTag = findByTags bms tags
@@ -187,7 +212,7 @@ deleteBMs opts tags bms = do
                             then sequence $ mapMaybe promptDelete bmsByTag
                             else return bmsByTag
         let bms' = difference (fromList bms) (fromList tagsToDelete)
-        length bms `seq` writeFile dbFile . showList $ toList bms'
+        writeFile dbFile . showBMs $ toList bms'
         return $ toList bms'
     where
         promptDelete :: (MockIO m) => BM -> Maybe (m BM)
@@ -196,11 +221,15 @@ deleteBMs opts tags bms = do
                                  then Just $ return bm
                                  else Nothing
 
+showBMs :: [BM] -> String
+showBMs [] = "[]"
+showBMs [x] = "[" ++ show x ++ "]"
+showBMs bms = showBMs bms
 showList :: (Show a) => [a] -> String
 showList list = "[" ++ intercalate "\n," (map show list) ++ "]\n"
 
-openURL :: (MonadIO m, MockIO m) => Bool -> URL -> m ()
-openURL shouldPrompt url =
+openBM :: (MonadIO m, MockIO m) => Bool -> BM -> m ()
+openBM shouldPrompt (BM {bmUrl=url}) =
     if shouldPrompt
         then do shouldOpenUrl <- readYN url
                 when shouldOpenUrl $ open url True
@@ -234,12 +263,12 @@ exportBMs bms dbFile = do
 
 -- For importing from a csv file with syntax: `url,title,..,tag`
 importBMsFromCSV :: (MockIO m) => [BM] -> String -> String -> m ()
-importBMsFromCSV bms csvFile dbFile = do
+importBMsFromCSV !bms csvFile dbFile = do
         rsavedCSV <- readFile csvFile
         let savedLines = drop 1 . splitOn "\n" $ rsavedCSV
         rsaved <- return . mapMaybe (csvToTuple . splitOn ",") $ savedLines
         printStats True rsaved
-        length bms `seq` writeFile dbFile (showList (bms ++ rsaved))
+        writeFile dbFile (showBMs (bms ++ rsaved))
     where
         csvToTuple :: [String] -> Maybe BM
         csvToTuple [url,title,_,tag] = do
@@ -259,4 +288,4 @@ importBMsFromHtml dbBms dbFile htmlFile = do
         imported <- forM tagsNurls $
             \(tags',url) -> do bm <- mkBM (iTag:tags') url
                                getBmTitle bm
-        writeFile dbFile (showList $ dbBms ++ imported)
+        writeFile dbFile (showBMs $ dbBms ++ imported)
